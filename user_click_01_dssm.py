@@ -37,8 +37,6 @@ class DNNModel(nn.Module):
     def __init__(self, input_user, input_item, out, input_user_categorical_feature, input_item_categorical_feature, 
                  hidden_layers, dropouts, batch_norm):
         super(DNNModel, self).__init__()
-        # 6040,  128
-        # 3883,  128
         self.user_embed = nn.Embedding(input_user_categorical_feature[0][0], input_user_categorical_feature[0][1])
         self.item_embed = nn.Embedding(input_item_categorical_feature[0][0], input_item_categorical_feature[0][1])
         
@@ -105,7 +103,7 @@ def random_sample_01_method(train_data):
     data = pd.DataFrame(data, columns=['user', 'movie', 'tag']) 
     return data
 
-def train_model(model, train_loader, val_loader, epoch, loss_function, optimizer, early_stop, minloss_model_filename):
+def train_model(model, train_loader, val_loader, epoch, loss_function, optimizer, early_stop, minloss_model_filename, best_auc_model_filename):
     """
     pytorch 模型训练通用代码
     :param model: pytorch 模型
@@ -187,7 +185,7 @@ def train_model(model, train_loader, val_loader, epoch, loss_function, optimizer
         if val_auc > best_val_auc : 
             print("val_auc:{} is best than {} ".format(val_auc, best_val_auc))
             best_val_auc = val_auc
-            torch.save(model.state_dict(), 'model/userclick_best_val_auc_model.pt')
+            torch.save(model.state_dict(), best_auc_model_filename
         
         # 提前停止策略
         if i == 0:
@@ -205,11 +203,15 @@ def train_model(model, train_loader, val_loader, epoch, loss_function, optimizer
                     break
 
 if __name__ == "__main__":
+
     show_gpu_memory()
 
     best_val_auc = 0.0
 
     best_model_file = "model/userclick_min_loss_model.pt"
+    best_auc_model_file = 'model/userclick_best_val_auc_model.pt'
+    user_label_dict_file = "model/user_label_dict_file.pt"
+    item_label_dict_file = "model/item_label_dict_file.pt"
 
     startdate = date(2021,4,28)
     enddate = date(2021,4,29)
@@ -219,22 +221,7 @@ if __name__ == "__main__":
 
     li = []
 
-    ROWS_NUM = 1000000
-
-
-    test_data_dir = "data/dt=2021-04-29/gen_1day_samples/"
-    for file_name in glob(test_data_dir + "00000*"):
-        print("retrieve test file:{}".format(file_name))
-        df = pd.read_csv(file_name, sep = ",", index_col=None, header=0, nrows = ROWS_NUM)
-        df.columns=['user', 'item', 'tag', 'count']
-        li.append(df)
-
-    test_data = pd.concat(li, axis=0, ignore_index=True)
-
-    li = []
-
-    print("test data shape: {}".format(test_data.shape))
-    print("test data done....")
+    ROWS_NUM = 100
 
     for dt in pd.date_range(startdate,enddate-timedelta(days=1),freq='d'):
  
@@ -251,6 +238,7 @@ if __name__ == "__main__":
     train_data = pd.concat(li, axis=0, ignore_index=True)
 
     # 将click_num > 1的处理成0,1二值
+    train_data['tag'] = train_data['tag'].astype(int)
     train_data.loc[train_data['tag'] > 1, 'tag'] = 1
 
     print("Processing sample data....")
@@ -262,6 +250,7 @@ if __name__ == "__main__":
     user_le = preprocessing.LabelEncoder()
     item_le = preprocessing.LabelEncoder()
     tag_le = preprocessing.LabelEncoder()
+
     # convert 'user'
     train_data_user = user_le.fit_transform(train_data[['user']].values) 
     train_data_user_num = len(user_le.classes_)
@@ -306,6 +295,7 @@ if __name__ == "__main__":
     input_user = 128
     input_item = 128
     out = 64
+
     # 
     input_user_categorical_feature = {0: (train_data_user_num, 128)}
     input_item_categorical_feature =  {0: (train_data_item_num, 128)}
@@ -333,12 +323,34 @@ if __name__ == "__main__":
     
     if not os.path.isfile(best_model_file) :
         print("Training ....")
-        train_model(model, train_loader, val_loader, epoch, loss_function, optimizer, early_stop, best_model_file) 
+        train_model(model, train_loader, val_loader, epoch, loss_function, optimizer, early_stop, best_model_file, best_auc_model_file) 
+
+        # 存储映射表
+        user_encode_dict = dict(zip(user_le.classes_, np.arange(len(user_le.classes_))))
+        item_encode_dict = dict(zip(item_le.classes_, np.arange(len(item_le.classes_))))
+
+        a_file = open(user_label_dict_file, "wb")
+        pickle.dump(user_encode_dict, a_file)
+        a_file.close()
+
+        a_file = open(item_label_dict_file, "wb")
+        pickle.dump(item_encode_dict, a_file)
+        a_file.close()
+
+
     else:
         print("Load pre-trained model.....")
         model.load_state_dict(torch.load(best_model_file))
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         model.to(device)
+
+        a_file = open(user_label_dict_file, "rb") 
+        user_encode_dict = pickle.load(a_file)
+        a_file.close()
+
+        a_file = open(item_label_dict_file, "rb") 
+        item_encode_dict = pickle.load(a_file)
+        a_file.close()
 
     t1 = timeit.default_timer()
     torch.cuda.synchronize()
@@ -351,52 +363,94 @@ if __name__ == "__main__":
     #print("user info:{}".format(user.shape))
 
     # 结果验证
-    if 0:
-        model.eval()
-        user['movie'] = 1
-        test_x = user[['user', 'movie']].values
-        x = torch.from_numpy(test_x).cuda()
-        user_embed, _ = model(x)
-        
-        movie['user'] = 1
-        test_x = movie[['user', 'movie']].values
-        x = torch.from_numpy(test_x).cuda()
-        _, movie_embed = model(x)
-        
-        movie_embed = movie_embed.cpu().detach().numpy()
-        user_embed = user_embed.cpu().detach().numpy()
-        
+    model.eval()
 
-        ## faiss索引构建
-        d = 64
-        nlist = 10
-        index = faiss.IndexFlatL2(d)
-        index.add(movie_embed)
-        
-        # 验证集数据字典化
-        user_movie_dict_val = dict()
-        for idx, rows in tqdm(val_data.iterrows(), total=len(val_data)):
-            u = rows['user']
-            m = rows['movie']
-            if u not in user_movie_dict_val:
-                user_movie_dict_val[u] = [m]
-            else:
-                user_movie_dict_val[u].append(m)
-                    
-        # 用户推荐结果索引           
-        D, I = index.search(user_embed[list(val_data['user'].unique())], 50)
-        
-        # 召回率计算
-        hits, total, total1 = 0, 0, 0
-        for uid, rec_list in zip(list(val_data['user'].unique()), I):
-            hits += len(set(rec_list)&set(user_movie_dict_val[uid]))
-            total += len(user_movie_dict_val[uid])
-            total1 += len(set(rec_list))
+    test_data_dir = "data/dt=2021-04-29/gen_1day_samples/"
+    for file_name in glob(test_data_dir + "00000*"):
+        print("retrieve test file:{}".format(file_name))
+        df = pd.read_csv(file_name, sep = ",", index_col=None, header=0, nrows = ROWS_NUM)
+        df.columns=['user', 'item', 'tag', 'count']
+        li.append(df)
 
-        # 率计算
-        recall = hits/total
-        precision = hits/total1
-        F1 = 2*recall*precision/(recall+precision)
-        print("recall is %.3f" % (hits/total))
-        print("precision is %.3f" % (hits/total1))
-        print("F1 score is %.3f" % (F1))
+    test_data = pd.concat(li, axis=0, ignore_index=True)
+
+    # 对测试数据进行编码
+    print("before process, test_data shape:{}".format(test_data.shape))
+    test_data['user'] = test_data['user'].apply(lambda x: user_encode_dict[x] if x in user_encode_dict else -1 )
+    test_data['item'] = test_data['item'].apply(lambda x: item_encode_dict[x] if x in item_encode_dict else -1 )
+    test_data = test_data[test_data.user != -1]
+    test_data = test_data[test_data.item != -1]
+
+    # 将click_num > 1的处理成0,1二值
+    test_data['tag'] = train_data['tag'].astype(int)
+    test_data.loc[test_data['tag'] > 1, 'tag'] = 1
+
+    test_item_num = test_data['item'].nunique()
+    print("after process, test_data shape:{}".format(test_data.shape))
+
+    li = []
+
+    print("test data preprocess done....")
+    
+    test_df = test_data[['user', 'item']].values
+    test_labels = test_data[['tag']].values
+
+    print ("test label shape:{}".format(test_labels.shape))
+
+    x = torch.from_numpy(test_df).cuda()
+    user_embed, item_embed = model(x)
+        
+    user_embed = user_embed.cpu().detach().numpy()
+    item_embed = item_embed.cpu().detach().numpy()
+
+    # 准确率计算
+    test_predict_labels = torch.sigmoid(torch.sum(user_embed*item_embed, 1))
+    test_predict_labels = predict_label.detach().numpy()
+
+    print("predict label shape:{}".format(test_predict_labels.shape))
+
+    precision = np.mean(test_predict_labels == test_labels)
+
+    print(" ===> accuracy/precision of test : {}".format(precision))
+
+    ## faiss索引构建
+    vector_dim = 128
+    nlist = 10
+    quantizer = faiss.IndexFlatIP(vector_dim)
+    index = faiss.IndexIVFFlat(quantizer, vector_dim, int(np.sqrt(test_item_num)), faiss.METRIC_INNER_PRODUCT)
+    item_embed_copy = item_embed.copy()
+    faiss.normalize_L2(item_embed_copy)
+    index.train(item_embed_copy)
+    index.add(item_embed_copy)
+    
+    # 测试集数据字典化
+    user_item_dict_test = dict()
+    for idx, rows in tqdm(test_data.iterrows(), total=len(test_data)):
+        user = rows['user']
+        item = rows['item']
+        if user not in user_item_dict_test:
+            user_item_dict_test[user] = [item]
+        else:
+            user_item_dict_test[user].append(item)
+                
+    # 用户推荐结果索引           
+    user_embed_copy = user_embed.copy()
+    faiss.normalize_L2(user_embed_copy)
+    k = 5 # the number of nearest neighour it returned.
+    distances, indices = index.search(user_embed_copy, k)
+        
+    ## 召回率计算
+    hits, total = 0, 0
+    for uid, rec_list in zip(list(test_data['user'].unique()), indices):
+
+        hits += len(set(rec_list) & set(user_item_dict_test[uid]))
+        total += len(user_item_dict_test[uid])
+        #total1 += len(set(rec_list))
+
+    ## 率计算
+    recall = hits/total
+    #precision = hits/total1
+    F1 = 2*recall*precision/(recall+precision)
+    print("recall is %.3f" % (hits/total))
+    #print("precision is %.3f" % (hits/total1))
+    print("F1 score is %.3f" % (F1))
